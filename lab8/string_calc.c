@@ -4,7 +4,7 @@
  *
  * E -> T E'
  * E' -> '.' T E'
- * E -> ε
+ * E' -> ε
  * T -> V '^' T
  * T -> V
  * V -> '(' E ')'
@@ -63,18 +63,29 @@ typedef enum {
 } opkind_t;
 
 typedef struct op_t {
-    struct op_t *left;
-    struct op_t *right;
+    struct node_t *left;
+    struct node_t *right;
     opkind_t op;
 } op_t;
 
-typedef struct {
-    char tag;
+typedef enum {
+    BINOP,
+    LIT
+} node_type_t;
+
+typedef struct node_t {
+    node_type_t tag;
     union {
         op_t op;
         char *val;
     };
 } node_t;
+
+node_t *node_new() {
+    node_t *new = malloc(sizeof(node_t));
+    if (new == NULL) abort();
+    return new;
+}
 
 typedef enum {
     STRING,
@@ -140,7 +151,7 @@ token_t lex() {
                 return temp;
             default:
                 fprintf(stderr, "invalid character %c while lexing\n", c);
-                abort();
+                exit(1);
                 break;
         }
     }
@@ -177,10 +188,130 @@ void token_print(token_t *tok) {
     }
 }
 
-int main(int argc, char **argv) {
-    while (true) {
-        token_t tok = lex();
-        token_print(&tok);
-        if (tok.type == TEOF) break;
+typedef struct {
+    token_t lookahead;
+} parser_t;
+
+token_t parse_next(parser_t *parser) {
+    token_t old = parser->lookahead;
+    parser->lookahead = lex();
+    return old;
+}
+
+void parse_expect(parser_t *parser, token_type_t type) {
+    if (parser->lookahead.type != type) {
+        fprintf(stderr, "Expected %d, found %d\n", type, parser->lookahead.type);
+        exit(1);
     }
+    parse_next(parser);
+}
+
+
+node_t *parse_E(parser_t *);
+node_t *parse_Eprime(parser_t *, node_t *);
+node_t *parse_T(parser_t *);
+node_t *parse_V(parser_t *);
+
+node_t *parse() {
+    parser_t *parser = malloc(sizeof(parser_t));
+    if (parser == NULL) abort();
+    parse_next(parser);
+    return parse_E(parser);
+}
+
+node_t *parse_E(parser_t *parser) {
+    node_t *first = parse_T(parser);
+    return parse_Eprime(parser, first);
+}
+
+node_t *parse_Eprime(parser_t *parser, node_t *first) {
+    if (parser->lookahead.type != DOT) {
+        return first;
+    }
+    parse_expect(parser, DOT);
+    node_t *second = parse_T(parser);
+
+    node_t *new = node_new();
+    new->tag = BINOP;
+    new->op.op = CONCAT;
+    new->op.left = first;
+    new->op.right = second;
+
+    return  parse_Eprime(parser, new);
+}
+
+node_t *parse_T(parser_t *parser) {
+    node_t *first = parse_V(parser);
+    if (parser->lookahead.type != CARET) {
+        return first;
+    }
+    parse_expect(parser, CARET);
+    node_t *second = parse_T(parser);
+
+    node_t *new = node_new();
+    new->tag = BINOP;
+    new->op.op = REPEAT;
+    new->op.left = first;
+    new->op.right = second;
+
+    return new;
+}
+
+node_t *parse_V(parser_t *parser) {
+    if (parser->lookahead.type == LPAREN) {
+        node_t *inner = parse_E(parser);
+        parse_expect(parser, RPAREN);
+        return inner;
+    }
+
+    if (parser->lookahead.type != STRING) {
+        fprintf(stderr, "Error: expected STRING, found %d",
+                parser->lookahead.type);
+        exit(1);
+    } else {
+        node_t *new = node_new();
+        new->tag = LIT;
+        new->val = parser->lookahead.val->data;
+        parse_next(parser);
+        return new;
+    }
+}
+
+void indent(int depth) {
+    for (int i = 0; i < depth; i++) {
+        putchar(' ');
+    }
+}
+
+char *opkind_to_str(opkind_t op) {
+    switch (op) {
+        case CONCAT:
+            return "CONCAT";
+        case REPEAT:
+            return "REPEAT";
+        default:
+            abort();
+    }
+}
+
+void node_print(node_t *node, int depth) {
+    switch (node->tag) {
+        case BINOP:
+            indent(depth);
+            printf("BINOP: %s\n", opkind_to_str(node->op.op));
+            node_print(node->op.left, depth + 4);
+            node_print(node->op.right, depth + 4);
+            break;
+        case LIT:
+            indent(depth);
+            printf("STR: %s\n", node->val);
+            break;
+        default:
+            abort();
+    }
+}
+
+int main(int argc, char **argv) {
+    node_t *ast = parse();
+    node_print(ast, 0);
 }
