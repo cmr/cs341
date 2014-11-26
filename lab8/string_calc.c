@@ -1,6 +1,13 @@
-/* string_calc: a simple "calculator" on the language of strings.
+/* string_calc.c: a simple "calculator" on the language of strings.
  *
- * The syntax of the language is:
+ * To use this, compile with your favorite C compiler. I do it with:
+ * `clang -O -o string_calc string_calc.c`. Then, run with `./string_calc`.
+ * You can feed lines in, and the calculator will run when you press Ctrl-D
+ * (or give it EOF), but due to the line-buffering nature of portable stdin,
+ * you need to press enter and THEN Ctrl-D. A final Ctrl-D will end the
+ * program if there's no input.
+ *
+ * The grammar this parser implements is:
  *
  * E -> T E'
  * E' -> '.' T E'
