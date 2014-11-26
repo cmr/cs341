@@ -24,7 +24,6 @@ typedef struct {
     char *data;
 } charvec_t;
 
-
 charvec_t *charvec_new() {
     charvec_t *temp = calloc(1, sizeof(charvec_t));
     if (temp == NULL) abort();
@@ -40,7 +39,8 @@ charvec_t *charvec_new() {
 }
 
 void charvec_push(charvec_t *vec, char c) {
-    if (vec->length < vec->capacity) {
+    // 1 for the NUL
+    if (vec->length < vec->capacity - 1) {
         // pass
     } else {
         vec->capacity *= 2;
@@ -54,7 +54,36 @@ void charvec_push(charvec_t *vec, char c) {
 void charvec_free(charvec_t *vec) {
     if (vec) {
         free(vec->data);
+        free(vec);
     }
+}
+
+void charvec_concat(charvec_t *source, charvec_t *dest) {
+    char *c = source->data;
+    for (int i = 0; i < source->length; i++) {
+        charvec_push(dest, *c++);
+    }
+}
+
+charvec_t *charvec_from_cstr(char *str) {
+    charvec_t *res = charvec_new();
+    while (*str) {
+        charvec_push(res, *str++);
+    }
+    return res;
+}
+
+charvec_t *charvec_clone(charvec_t *source) {
+    charvec_t *temp = charvec_new();
+    for (int i = 0; i < source->length; i++) {
+        charvec_push(temp, source->data[i]);
+    }
+    return temp;
+}
+
+int charvec_to_int(charvec_t *cv) {
+    char *end = &cv->data[cv->length-1];
+    return strtol(cv->data, &end, 10);
 }
 
 typedef enum {
@@ -70,14 +99,15 @@ typedef struct op_t {
 
 typedef enum {
     BINOP,
-    LIT
+    LIT,
+    NEOF,
 } node_type_t;
 
 typedef struct node_t {
     node_type_t tag;
     union {
         op_t op;
-        char *val;
+        charvec_t *val;
     };
 } node_t;
 
@@ -101,8 +131,27 @@ typedef struct {
     charvec_t *val;
 } token_t;
 
+char *token_type_to_str(token_type_t tok) {
+    switch (tok) {
+        case STRING:
+            return "STRING";
+        case DOT:
+            return "DOT";
+        case LPAREN:
+            return "LPAREN";
+        case RPAREN:
+            return "RPAREN";
+        case CARET:
+            return "CARET";
+        case TEOF:
+            return "TEOF";
+        default:
+            abort();
+    }
+}
+
 token_t lex() {
-    token_t temp = {0};
+    token_t temp = {0, 0};
 
     char c;
     int seen_char = false;
@@ -168,19 +217,11 @@ void token_print(token_t *tok) {
             printf("{STRING:%s}", tok->val->data);
             break;
         case DOT:
-            puts("{DOT}");
-            break;
         case LPAREN:
-            puts("{LPAREN}");
-            break;
         case RPAREN:
-            puts("{RPAREN}");
-            break;
         case CARET:
-            puts("{CARET}");
-            break;
         case TEOF:
-            puts("{TEOF}");
+            printf("{%s}", token_type_to_str(tok->type));
             break;
         default:
             abort();
@@ -198,14 +239,38 @@ token_t parse_next(parser_t *parser) {
     return old;
 }
 
-void parse_expect(parser_t *parser, token_type_t type) {
+token_t parse_expect(parser_t *parser, token_type_t type) {
     if (parser->lookahead.type != type) {
-        fprintf(stderr, "Expected %d, found %d\n", type, parser->lookahead.type);
+        fprintf(stderr, "Expected %s, found %s\n",
+                token_type_to_str(type),
+                token_type_to_str(parser->lookahead.type));
         exit(1);
     }
-    parse_next(parser);
+    return parse_next(parser);
 }
 
+node_t *node_eof() {
+    node_t *new = node_new();
+    new->tag = NEOF;
+    return new;
+}
+
+void node_free(node_t *node) {
+    switch (node->tag) {
+        case LIT:
+            charvec_free(node->val);
+            break;
+        case BINOP:
+            node_free(node->op.left);
+            node_free(node->op.right);
+            break;
+        case NEOF:
+            break;
+        default:
+            abort();
+     }
+    free(node);
+}
 
 node_t *parse_E(parser_t *);
 node_t *parse_Eprime(parser_t *, node_t *);
@@ -215,8 +280,11 @@ node_t *parse_V(parser_t *);
 node_t *parse() {
     parser_t *parser = malloc(sizeof(parser_t));
     if (parser == NULL) abort();
-    parse_next(parser);
-    return parse_E(parser);
+    parser->lookahead = lex();
+    node_t *res = parse_E(parser);
+    token_free(&parser->lookahead);
+    free(parser);
+    return res;
 }
 
 node_t *parse_E(parser_t *parser) {
@@ -237,7 +305,7 @@ node_t *parse_Eprime(parser_t *parser, node_t *first) {
     new->op.left = first;
     new->op.right = second;
 
-    return  parse_Eprime(parser, new);
+    return parse_Eprime(parser, new);
 }
 
 node_t *parse_T(parser_t *parser) {
@@ -264,15 +332,14 @@ node_t *parse_V(parser_t *parser) {
         return inner;
     }
 
-    if (parser->lookahead.type != STRING) {
-        fprintf(stderr, "Error: expected STRING, found %d",
-                parser->lookahead.type);
-        exit(1);
+    if (parser->lookahead.type == TEOF) {
+        return node_eof();
     } else {
+        token_t tok = parse_expect(parser, STRING);
+
         node_t *new = node_new();
         new->tag = LIT;
-        new->val = parser->lookahead.val->data;
-        parse_next(parser);
+        new->val = tok.val;
         return new;
     }
 }
@@ -304,14 +371,59 @@ void node_print(node_t *node, int depth) {
             break;
         case LIT:
             indent(depth);
-            printf("STR: %s\n", node->val);
+            printf("STR: %s\n", node->val->data);
+            break;
+        case NEOF:
+            indent(depth);
+            printf("EOF\n");
             break;
         default:
             abort();
     }
 }
 
-int main(int argc, char **argv) {
-    node_t *ast = parse();
-    node_print(ast, 0);
+charvec_t *eval(node_t *ast) {
+    charvec_t *left, *right, *orig;
+    switch (ast->tag) {
+        case LIT:
+            return charvec_clone(ast->val);
+        case BINOP:
+            switch (ast->op.op) {
+                case CONCAT:
+                    left = eval(ast->op.left);
+                    right = eval(ast->op.right);
+                    charvec_concat(right, left);
+                    charvec_free(right);
+                    return left;
+                case REPEAT:
+                    left = eval(ast->op.left);
+                    orig = charvec_clone(left);
+                    right = eval(ast->op.right);
+                    for (int i = 0; i < charvec_to_int(right) - 1; i++) {
+                        charvec_concat(orig, left);
+                    }
+                    charvec_free(orig);
+                    charvec_free(right);
+                    return left;
+                default:
+                    abort();
+            }
+        case NEOF:
+            fprintf(stderr, "Error: unexpected EOF...\n");
+            node_free(ast);
+            exit(1);
+        default:
+            abort();
+    }
+}
+
+int main() {
+    while (true) {
+        node_t *ast = parse();
+        node_print(ast, 0);
+        charvec_t *res = eval(ast);
+        printf("Result: %s\n", res->data);
+        node_free(ast);
+        charvec_free(res);
+    }
 }
