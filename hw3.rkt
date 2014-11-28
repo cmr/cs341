@@ -156,15 +156,16 @@
                (lambda (n config prev accum)
                  (if (= n 0)
                    accum
-                   (let ((next (car
-                                 (remove prev
-                                         (shuffle (config-neighbors
-                                                    config))))))
+                   (let
+                     ((next (car (remove prev (shuffle (config-neighbors
+                                                         config))))))
                      (random-move
                        (- n 1)
                        next
-                       config)))))
+                       config
+                       (append accum (list next))))))))
       (random-move
         N
         (list->vector (range (* n n)))
-        (list->vector (range (* n n)))))))
+        (list->vector (range (* n n)))
+        '()))))
