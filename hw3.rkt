@@ -153,6 +153,12 @@
                          (expand current))))))
         (reconstruct-path came-from goal))))))
 
+(define dall
+  (lambda ls
+    (for ([l ls])
+      (display l) (display " "))
+      (newline)))
+
 ; A "good heuristic" for A* to solve the puzzle efficiently. This is a very
 ; simple admissable heuristic that counts the number of tiles that are out of
 ; place.
@@ -162,6 +168,10 @@
       (filter
         (lambda (i) (not (= (vector-ref g i) (vector-ref n i))))
         (range (vector-length g))))))
+
+(define goal-state
+  (lambda (n)
+    (list->vector (range (* n n)))))
 
 ; Solve a puzzle, returning a list of configurations to move between to reach
 ; the goal configuration.
@@ -233,13 +243,9 @@
         (range n))
       (string #\newline))))
 
-(define goal-state
-  (lambda (n)
-    (list->vector (range (* n n)))))
-
 ; --------- INTERFACE ------------
 ; The amount of mutable state here succcccks but can't really avoid it.
-; I find it somewhat difficult to reason about it, but it's just a state 
+; I find it somewhat difficult to reason about it, but it's just a state
 ; machine. In general, state transitions happen due to an input event, and
 ; when we redraw we use the current state to determine how to do that.
 
@@ -253,20 +259,24 @@
     (let ((idx (vector-member 0 a)))
       (vector-ref b idx))))
 
-(define dall
-  (lambda args
-    (for-each
-     (lambda (arg)
-       (display arg)
-       (display " "))
-     args)
-    (newline)))
+; Finds the direction key that would need to be pressed to move from state1 to
+; state2, or '() if it's not possible.
+(define direction-moved
+  (lambda (state1 state2)
+    (let* ((moved-value (find-moved-value state1 state2))
+           (a (vector-member moved-value state1))
+           (b (vector-member moved-value state2))
+           (diff (- b a)))
+      (cond
+        ((equal? diff n) 'down)
+        ((equal? diff (- n)) 'up)
+        ((equal? diff 1) 'right)
+        ((equal? diff (- 1)) 'left)))))
 
 ; A canvas to handle window resizes
 (define my-canvas%
   (class canvas%
     (init start-config)
-    
     (define start-anim-time 0)
     (define current-state 'waiting)
     ; size of each tile in the puzzle
@@ -280,35 +290,66 @@
     (define orig-y 0)
     (define xfunc +)
     (define yfunc +)
+    (define winning #f)
     (define current-anim-timer (new timer%
                                     [notify-callback
                                       (lambda ()
                                         (send this refresh-now))]))
-    
+    (define key-press-timer
+      (new timer%
+           [notify-callback
+             (lambda ()
+               (if (or (equal? path 'empty) winning)
+                 (send key-press-timer stop)
+                 (if (null? path)
+                   '()
+                   (let ((next (car path)))
+                     (set! path (cdr path))
+                     (move-to next)))))]))
+
+    (define path '())
+
+    (define move-to
+      (lambda (state)
+        (let ((key (direction-moved config state)))
+          (send this on-char (new key-event% [key-code key])))))
+
     (define reset-state
       (lambda ()
         (set! start-anim-time 0)
         (set! current-state 'waiting)
+        (if (equal? config (list->vector (range (* n n))))
+          (set! winning #t)
+          (set! winning #f))
         (set! next-config config)
         (set! moving-val 0)
         (set! orig-x 0)
         (set! orig-y 0)
         (send current-anim-timer stop)))
-    
-    (define display-state
-      (lambda ()
-        (dall start-anim-time current-state config next-config moving-val orig-x orig-y)))
-    
+
     (define draw-tile
-      (lambda (dc x y val)
+      (lambda (dc x y val xoff yoff)
+        (send dc set-text-foreground "black")
         (let*-values
           ([(text) (number->string val)]
-           [(tw th _ __) (send dc get-text-extent text)])
-          (send dc draw-rectangle x y b b)
+           [(tw th _ __) (send dc get-text-extent text)]
+           [(x2) (+ (* s (+ x 1)) (* b x) xoff)]
+           [(y2) (+ (* s (+ y 1)) (* b y) yoff)])
+          (send dc draw-rectangle x2 y2 b b)
           (send dc draw-text text
-                (- (+ x (/ b 2)) (/ tw 2))
-                (- (+ y (/ b 2)) (/ th 2))))))
-    
+                (- (+ x2 (/ b 2)) (/ tw 2))
+                (- (+ y2 (/ b 2)) (/ th 2))))))
+
+    (define draw-winning
+      (lambda (dc)
+        (send dc set-text-foreground "green")
+        (let-values ([(w h) (send (send this get-parent) get-client-size)])
+          (let ((text "You've won! Press n to play again, q to quit"))
+            (let-values ([(tw th _ __) (send dc get-text-extent text)])
+              (send dc draw-text text
+                    (- (/ w 2) (/ tw 2))
+                    (- (/ h 2) (/ th 2))))))))
+
     ; Draw the entire board with each value at its "natural" position
     (define draw-board
       (lambda (dc)
@@ -318,25 +359,18 @@
           (sequence-for-each
             (lambda (v)
               (unless (= v 0)
-                (let*
-                  ((x (modulo c n))
-                   (y (truncate (/ c n)))
-                   (x2 (+ (* s (+ x 1)) (* b x)))
-                   (y2 (+ (* s (+ y 1)) (* b y))))
-                  (draw-tile dc x2 y2 v)))
+                (let*-values
+                  ([(x) (modulo c n)]
+                   [(y) (truncate (/ c n))])
+                  (draw-tile dc x y v 0 0)))
               (set! c (+ c 1)))
-            (in-vector config)))))
+            (in-vector config))
+          (when winning (draw-winning dc)))))
 
     (define identity1
       (lambda (a . b)
         a))
 
-    (define check-win-state
-      (lambda ()
-        (when (equal? config (goal-state n))
-            (set! current-state 'win)
-            (dall "winning!"))))
-    
     (define draw-anim
       (lambda (dc)
         (let* ((dt (- (current-inexact-milliseconds) start-anim-time))
@@ -347,33 +381,22 @@
             (begin
               (set! config next-config)
               (reset-state)
-              (check-win-state)
               (draw-board dc))
             (begin
               (draw-board dc)
               (draw-tile
                 dc
-                (xfunc orig-x dist)
-                (yfunc orig-y dist)
-                moving-val))))))
-    
-    (define/public draw-win
-      (lambda (dc)
-        (let*-values
-          ([(text) "You've won!"]
-           [(tw th _ __) (send dc get-text-extent text)]
-           [(ww wh) (send dc get-size)]
-           [(old-color) (send dc get-text-foreground)])
-          (send dc set-text-foreground "green")
-          (send dc draw-text text
-                (- (/ ww 2) (/ tw 2))
-                (- (/ wh 2) (/ th 2)))
-          (send dc set-text-foreground old-color))))
+                orig-x
+                orig-y
+                moving-val
+                (xfunc 0 dist)
+                (yfunc 0 dist)))))))
 
     (define/override (on-size w h)
       (let ((w (min w h)))
         (set! s (/ (* 0.10 w) (+ n 1)))
         (set! b (/ (* 0.90 w) n))
+        (send (send this get-parent) resize w w)
         (send this refresh-now)))
 
     (define/override (on-char ch)
@@ -383,6 +406,8 @@
             (or (equal? key 'up) (equal? key 'right) (equal? key 'down)
                  (equal? key 'left))
              (set! next-config (config-move config key))
+             (unless (equal? (send ch get-time-stamp) 0)
+               (set! path 'empty))
              (if (equal? config next-config)
                (begin
                  (reset-state)
@@ -403,39 +428,41 @@
                                ['left identity1]
                                ['up -]
                                ['down +]))
-                 
-                 (set! orig-x 
-                       (modulo (vector-member moving-val config) n))
-                 (set! orig-x 
-                       (+ (* s (+ orig-x 1)) (* b orig-x)))
-                 (set! orig-y 
-                       (truncate (/ (vector-member moving-val config) n)))
-                 (set! orig-y
-                       (+ (* s (+ orig-y 1)) (* b orig-y)))
-
+                 (set! orig-x (modulo (vector-member moving-val config) n))
+                 (set! orig-y (truncate (/ (vector-member moving-val config) n)))
                  (vector-set! config (vector-member 0 next-config) 0)
                  (send current-anim-timer start 1)
                  (send this refresh-now)))))
-        (when (or (equal? current-state 'waiting) (equal? current-state 'win))
-          (when (equal? key #\n)
-            (reset-state)
-            (set! config (last (random-puzzle 200)))
-            (send this refresh-now))
-          (when (equal? key #\s)
-            (dall "Here we'd be solving the puzzle...")))))
+        (when (equal? key #\n)
+          (set! path 'empty)
+          (reset-state)
+          (set! config (last (random-puzzle 200)))
+          (send this refresh-now))
+        (when (or (equal? key #\q) (equal? key 'escape))
+          (reset-state)
+          (set! path 'empty)
+          (exit))
+        (when (equal? key #\s)
+          (reset-state)
+          (set! path (solve config))
+          ; give it some wiggle room
+          (send key-press-timer start (+ anim-ms 50)))))
 
     (define/override (on-paint)
       (let ((dc (send this get-dc)))
-        (match current-state
-          ['waiting (draw-board dc)]
-          ['animating (draw-anim dc)]
-          ['win (draw-win dc)])))
-    
+        (if (equal? current-state 'waiting)
+          (draw-board dc)
+          (draw-anim dc))))
+
     (super-new)))
 
 (define frame (new frame% [label "8-Puzzle"]
-                   [width 200] [height 200]))
-(define canvas (new my-canvas% [start-config (last (random-puzzle 150))]
+                   [width 500] [height 500]))
+(define canvas (new my-canvas% [start-config (last (random-puzzle 200))]
                     [parent frame]))
 
 (send frame show #t)
+
+(define play-me
+  (lambda ()
+    (send canvas on-char (new key-event% [key-code #\s]))))
