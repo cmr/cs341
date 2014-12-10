@@ -5,17 +5,27 @@
 
 use std;
 use std::fmt;
+use Value;
 
 /// A TokenTree is roughly a value in the "syntax world", they are the things that macros
 /// manipulate, that get fed into eval, and that can be printed.
+// in hindsight this was a mistake, just use lists and quotes
 #[deriving(Show, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TokenTree {
     Leaf(Token),
     Delimited(Vec<TokenTree>),
+    Quoted(Box<TokenTree>),
 }
 
 impl TokenTree {
-    fn is_leaf(&self) -> bool {
+    pub fn get(&self, idx: uint) -> Option<&TokenTree> {
+        match *self {
+            TokenTree::Quoted(_) | TokenTree::Leaf(_) => None,
+            TokenTree::Delimited(ref tts) => tts.get(idx),
+        }
+    }
+
+    pub fn is_leaf(&self) -> bool {
         match self {
             &TokenTree::Leaf(_) => true,
             _ => false
@@ -41,6 +51,9 @@ impl TokenTree {
                 }
                 Ok(())
             }
+            &TokenTree::Quoted(ref inner) => {
+                writeln!(f, "'{:p}", &**inner)
+            }
         }
     }
 }
@@ -54,9 +67,10 @@ impl fmt::Pointer for TokenTree {
 #[deriving(Show, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Token {
     Identifier(String),
+    String(String),
     True,
     False,
-    Number(u64),
+    Number(i64),
     LParen,
     RParen,
     Quote,
@@ -74,6 +88,7 @@ impl fmt::Pointer for Token {
             &Token::RParen => write!(f, ")"),
             &Token::Quote => write!(f, "'"),
             &Token::Dot => write!(f, "."),
+            &Token::String(ref s) => write!(f, "\"{}\"", s),
         }
     }
 }
@@ -102,25 +117,9 @@ where R: Iterator<Token> {
             Ok(Some(TokenTree::Delimited(inner)))
         },
         Some(Token::RParen) => Err("extra )"),
+        Some(Token::Quote) => Ok(Some(TokenTree::Quoted(box try!(read_inner(lexer)).unwrap()))),
         Some(tok) => Ok(Some(TokenTree::Leaf(tok))),
         None => Ok(None),
-    }
-}
-
-pub fn write(input: &TokenTree) -> String {
-    let mut s = String::new();
-    write_inner(input, &mut s);
-    s
-}
-
-fn write_inner(input: &TokenTree, output: &mut String) {
-    match input {
-        &TokenTree::Leaf(ref tok) => output.extend(format!("{:p}", *tok).chars()),
-        &TokenTree::Delimited(ref inner) => {
-            output.push('(');
-            for tt in inner.iter() { output.push(' '); write_inner(tt, output); output.push(' '); }
-            output.push(')');
-        }
     }
 }
 
@@ -187,6 +186,9 @@ impl<R: Iterator<char>> Iterator<Token> for Lexer<R> {
                     }
                     continue
                 },
+                '"' => {
+                    return Some(Token::String(self.reader.by_ref().take_while(|&c| c != '"').collect()));
+                }
                 '#' => match self.reader.next() {
                     Some('t') => return Some(Token::True),
                     Some('f') => return Some(Token::False),
